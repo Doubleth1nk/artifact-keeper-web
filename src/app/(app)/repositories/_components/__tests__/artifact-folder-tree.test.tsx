@@ -97,12 +97,16 @@ describe("ArtifactFolderTree", () => {
   });
 
   it("renders a loading skeleton while the root is loading", () => {
-    getChildrenMock.mockImplementation(() => new Promise<TreeNode[]>(() => {}));
+    getChildrenMock.mockImplementation(
+      () => new Promise<TreeNode[]>(() => {}),
+    );
 
     renderTree();
 
     expect(screen.getByTestId("artifact-tree-loading")).toBeInTheDocument();
-    expect(screen.queryByTestId("artifact-folder-tree")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("artifact-folder-tree"),
+    ).not.toBeInTheDocument();
   });
 
   it("renders the empty state with a custom message", async () => {
@@ -110,7 +114,9 @@ describe("ArtifactFolderTree", () => {
 
     renderTree({ emptyMessage: "Nothing here yet." });
 
-    expect(await screen.findByTestId("artifact-tree-empty")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("artifact-tree-empty"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Nothing here yet.")).toBeInTheDocument();
   });
 
@@ -284,5 +290,86 @@ describe("ArtifactFolderTree", () => {
       repository_key: "raw-repo",
       path: "audio-data",
     });
+  });
+
+  it("sorts folders before files using case-insensitive natural ordering", async () => {
+    getChildrenMock.mockResolvedValue([
+      makeFile("raw-repo/file10.bin"),
+      makeFolder("raw-repo/zeta"),
+      makeFile("raw-repo/file2.bin"),
+      makeFolder("raw-repo/Alpha"),
+      makeFile("raw-repo/Beta.bin"),
+      makeFile("raw-repo/alpha.bin"),
+    ]);
+
+    renderTree();
+
+    await screen.findByText("file10.bin");
+
+    const items = screen.getAllByRole("treeitem");
+
+    expect(items.map((item) => item.getAttribute("aria-label"))).toEqual([
+      "Folder Alpha",
+      "Folder zeta",
+      "File alpha.bin",
+      "File Beta.bin",
+      "File file2.bin",
+      "File file10.bin",
+    ]);
+  });
+
+  it("shows a root error and retries loading the tree", async () => {
+    const user = userEvent.setup();
+
+    getChildrenMock
+      .mockRejectedValueOnce(new Error("root failed"))
+      .mockResolvedValueOnce([makeFile("raw-repo/recovered.txt")]);
+
+    renderTree();
+
+    expect(
+      await screen.findByText("Could not load repository tree."),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /retry/i }));
+
+    expect(await screen.findByText("recovered.txt")).toBeInTheDocument();
+    expect(getChildrenMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows a folder error and retries loading that folder", async () => {
+    const user = userEvent.setup();
+    let buildsAttempts = 0;
+
+    getChildrenMock.mockImplementation(async (params) => {
+      if (!params?.path) {
+        return [makeFolder("raw-repo/builds")];
+      }
+
+      if (params.path === "builds") {
+        buildsAttempts += 1;
+
+        if (buildsAttempts === 1) {
+          throw new Error("folder failed");
+        }
+
+        return [makeFile("raw-repo/builds/app.tar.gz")];
+      }
+
+      return [];
+    });
+
+    renderTree();
+
+    await user.click(await screen.findByTestId("artifact-tree-folder"));
+
+    expect(
+      await screen.findByText("Failed to load folder."),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /retry/i }));
+
+    expect(await screen.findByText("app.tar.gz")).toBeInTheDocument();
+    expect(buildsAttempts).toBe(2);
   });
 });
