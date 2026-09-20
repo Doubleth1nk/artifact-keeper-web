@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ShieldAlert,
   ShieldCheck,
+  ShieldQuestion,
   AlertTriangle,
   Clock,
   ChevronDown,
@@ -22,6 +23,8 @@ import { dtApi } from "@/lib/api/dependency-track";
 import { mutationErrorToast } from "@/lib/error-utils";
 import { isArtifactAnalyzable } from "@/lib/artifact-analyzable";
 import { ArtifactScansSection } from "./artifact-scans-section";
+import { InstallScriptFindingsSummary } from "./install-script-findings-summary";
+import { securityApi } from "@/lib/api/security";
 import type { CveHistoryEntry, CveStatus } from "@/types/sbom";
 import type { Artifact } from "@/types";
 import type {
@@ -42,6 +45,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { DataTable, type DataTableColumn } from "@/components/common/data-table";
 import { VulnIdLink } from "@/components/common/vuln-id-link";
+import { VendoredAdvisoriesSummary } from "./vendored-advisories-summary";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -49,6 +53,14 @@ import { VulnIdLink } from "@/components/common/vuln-id-link";
 
 interface SecurityTabContentProps {
   artifact: Artifact;
+  /**
+   * Whether the repository's format participates in package analysis
+   * (`supportsPackageAnalysis`). Gates the vendored-advisories roll-up — the
+   * artifact payload carries no format, so the caller has to say.
+   */
+  packageAnalysisSupported?: boolean;
+  /** Switch the artifact dialog to its Analysis tab. */
+  onOpenAnalysis?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,11 +131,31 @@ function resolveDtProjectUuid(
 // Component
 // ---------------------------------------------------------------------------
 
-export function SecurityTabContent({ artifact }: SecurityTabContentProps) {
+export function SecurityTabContent({
+  artifact,
+  packageAnalysisSupported = false,
+  onOpenAnalysis,
+}: SecurityTabContentProps) {
   const queryClient = useQueryClient();
   // Proxy-cached remote artifacts can't be scanned (artifact-keeper#2292);
   // used below to give honest guidance instead of "run a scan".
   const analyzable = isArtifactAnalyzable(artifact);
+
+  // Whether ANY scan has ever run against this artifact.
+  //
+  // Without this, `total === 0` was rendered as a green shield reading "No
+  // vulnerabilities detected" — which is what an unscanned artifact looks
+  // like, and what a genuinely clean one looks like, using the same colour
+  // and the same icon. That is the #4035 failure ("a scan that never opened
+  // the archive is indistinguishable from a clean one") reproduced in the UI.
+  //
+  // Shares `ArtifactScansSection`'s query key, so this costs no extra request.
+  const { data: scanList } = useQuery({
+    queryKey: ["security", "artifact-scans", artifact.id],
+    queryFn: () => securityApi.listArtifactScans(artifact.id),
+    retry: false,
+  });
+  const hasEverBeenScanned = (scanList?.items?.length ?? 0) > 0;
   const [page, setPage] = useState(1);
   const [dtFindingsPage, setDtFindingsPage] = useState(1);
 
@@ -486,6 +518,11 @@ export function SecurityTabContent({ artifact }: SecurityTabContentProps) {
   if (isLoading) {
     return (
       <div className="space-y-4">
+        <VendoredAdvisoriesSummary
+          artifact={artifact}
+          enabled={packageAnalysisSupported}
+          onOpenAnalysis={onOpenAnalysis}
+        />
         <Skeleton className="h-8 w-48" />
         <Skeleton className="h-16 w-full" />
         <Skeleton className="h-32 w-full" />
@@ -499,6 +536,32 @@ export function SecurityTabContent({ artifact }: SecurityTabContentProps) {
 
   return (
     <div className="space-y-6">
+      {/* -----------------------------------------------------------------
+          Vendored native libraries. Above everything else on purpose: the
+          CVE history and Dependency-Track findings below are both driven by
+          the package's DECLARED components, so a CVE inside a statically
+          linked libwebp shows up in neither — including in the "No
+          vulnerabilities detected" empty state.
+          ----------------------------------------------------------------- */}
+      <VendoredAdvisoriesSummary
+        artifact={artifact}
+        enabled={packageAnalysisSupported}
+        onOpenAnalysis={onOpenAnalysis}
+      />
+
+      {/* -----------------------------------------------------------------
+          Install-script findings. Same rationale as the vendored roll-up
+          above: a malicious `postinstall` is not a declared dependency, so
+          neither the CVE history nor Dependency-Track can see it, and
+          without this line the artifact renders the "No vulnerabilities
+          detected" empty state while the Analysis tab reports HIGH findings.
+          ----------------------------------------------------------------- */}
+      <InstallScriptFindingsSummary
+        artifact={artifact}
+        enabled={packageAnalysisSupported}
+        onOpenAnalysis={onOpenAnalysis}
+      />
+
       {/* ----------------------------------------------------------------- */}
       {/* Dependency-Track Integration Status */}
       {/* ----------------------------------------------------------------- */}
@@ -525,15 +588,28 @@ export function SecurityTabContent({ artifact }: SecurityTabContentProps) {
       </div>
 
       {total === 0 ? (
-        <div className="flex flex-col items-center justify-center py-12 text-center">
-          <ShieldCheck className="size-12 text-green-500/50 mb-4" />
+        <div
+          className="flex flex-col items-center justify-center py-12 text-center"
+          data-testid={
+            hasEverBeenScanned ? "vulns-none-found" : "vulns-not-assessed"
+          }
+        >
+          {hasEverBeenScanned ? (
+            <ShieldCheck className="size-12 text-green-500/50 mb-4" />
+          ) : (
+            <ShieldQuestion className="size-12 text-muted-foreground/50 mb-4" />
+          )}
           <p className="text-sm text-muted-foreground">
-            No vulnerabilities detected for this artifact.
+            {hasEverBeenScanned
+              ? "No vulnerabilities detected for this artifact."
+              : "This artifact has not been scanned for vulnerabilities."}
           </p>
           <p className="text-xs text-muted-foreground mt-1">
-            {analyzable
-              ? "Generate an SBOM and run a security scan to check for CVEs."
-              : "SBOM and scanning are available only for artifacts hosted in this registry, not proxy-cached remote artifacts."}
+            {!analyzable
+              ? "SBOM and scanning are available only for artifacts hosted in this registry, not proxy-cached remote artifacts."
+              : hasEverBeenScanned
+                ? "This reflects the most recent scan."
+                : "Nothing has been checked yet — this is not a clean result. Generate an SBOM and run a security scan to check for CVEs."}
           </p>
         </div>
       ) : (
