@@ -74,6 +74,40 @@ describe("RepoSetupGuide", () => {
     expect(screen.queryAllByRole("tablist")).toHaveLength(0);
   });
 
+  it("renders vscode gateway steps for VSCodium, code-server, and official VS Code", () => {
+    const { container } = render(
+      <RepoSetupGuide
+        repo={makeRepo({ format: "vscode", key: "openvsx", repo_type: "remote", is_public: true })}
+      />,
+    );
+    expect(screen.queryAllByRole("tablist")).toHaveLength(0);
+    const text = container.textContent ?? "";
+    expect(text).toContain("extensionsGallery");
+    // VSCodium's persistent config must set latestUrlTemplate, not just
+    // extensionUrlTemplate — omitting it can leak update lookups to
+    // open-vsx.org directly.
+    expect(text).toContain("latestUrlTemplate");
+    expect(text).toContain("EXTENSIONS_GALLERY");
+    expect(text).toMatch(/enterprise policy only/i);
+  });
+
+  it("shows only the direct-download note for local and private remote vscode repos", () => {
+    for (const overrides of [
+      { repo_type: "local" as const, is_public: false },
+      { repo_type: "remote" as const, is_public: false },
+    ]) {
+      const { container, unmount } = render(
+        <RepoSetupGuide repo={makeRepo({ format: "vscode", key: "openvsx", ...overrides })} />,
+      );
+      const text = container.textContent ?? "";
+      expect(text).toContain("VS Code gallery requires a public Remote repository");
+      expect(text).toContain("/vscode/openvsx/extensions/<publisher>/<name>/<version>/download");
+      expect(text).not.toContain("extensionsGallery");
+      expect(text).not.toContain("EXTENSIONS_GALLERY");
+      unmount();
+    }
+  });
+
   it("interpolates the repo key and picks proxy-vs-scoped npm config by repo type", () => {
     // remote (proxy): default registry — every install flows through the repo.
     render(
