@@ -260,9 +260,8 @@ export function RepoDetailContent({ repoKey, standalone = false }: RepoDetailCon
   // container repositories do not get the tab (it would only say so, and
   // the tab strip is full enough already).
   const showBuildTab = isContainerRepo && repository?.repo_type === "local";
-  // Folder-tree view for RAW/Generic repos (#2791): the tree is grouped
-  // client-side from the flat artifact list, so it needs the whole listing
-  // on one page (bounded) rather than a paginated slice.
+  // Folder-tree view for RAW/Generic repos (#2791): folders load one level
+  // at a time from /api/v1/tree (#850), not from the flat artifact list.
   const isTreeView =
     viewMode === "tree" && !!repoFormat && supportsTree(repoFormat);
   // First-class version history (#571, backend artifact-keeper#2367): only
@@ -279,11 +278,6 @@ export function RepoDetailContent({ repoKey, standalone = false }: RepoDetailCon
   // same way the Versions tab is.
   const packageAnalysisActive =
     !!repoFormat && supportsPackageAnalysis(repoFormat);
-  // The lazy tree uses /api/v1/tree and does not need the artifact list.
-  // If the user searches while in tree mode, reuse the normal server-side
-  // artifact search with ordinary pagination.
-  const effectivePageSize = pageSize;
-  const effectivePage = page;
 
   const handleViewModeChange = useCallback(
     (next: ArtifactViewMode) => {
@@ -302,15 +296,15 @@ export function RepoDetailContent({ repoKey, standalone = false }: RepoDetailCon
       "artifacts",
       repoKey,
       searchQuery,
-      effectivePage,
-      effectivePageSize,
+      page,
+      pageSize,
       useServerGrouping ? "grouped:maven" : isDockerGrouped ? "grouped:docker" : "flat",
     ],
     queryFn: () =>
       artifactsApi.listGrouped(repoKey, {
         q: searchQuery || undefined,
-        per_page: effectivePageSize,
-        page: effectivePage,
+        per_page: pageSize,
+        page,
         // The pagination bar renders `pagination.total` verbatim ("1-20 of N",
         // "Page 1 of M"), so it needs the real count. Without this the backend
         // returns a per-page lower bound (offset + rows + has_more) and the bar
@@ -319,6 +313,8 @@ export function RepoDetailContent({ repoKey, standalone = false }: RepoDetailCon
         ...(useServerGrouping ? { group_by: "maven_component" as const } : {}),
         ...(isDockerGrouped ? { group_by: "docker_tag" as const } : {}),
       }),
+    // The lazy tree reads /api/v1/tree and does not need the artifact list.
+    // A search typed in tree mode reuses this ordinary paginated search.
     enabled: !!repoKey && (!isTreeView || searchQuery.trim().length > 0),
   });
 
